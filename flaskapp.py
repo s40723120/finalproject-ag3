@@ -163,8 +163,6 @@ def doSearch():
                    directory + "</nav><section><h1>Search Result</h1>keyword: " + \
                    keyword.lower() + "<br /><br />in the following pages:<br /><br />" + \
                    match + "</section></div></body></html>"
-
-
 @app.route('/download/', methods=['GET'])
 def download():
     """Download file using URL."""
@@ -406,8 +404,7 @@ def editorfoot():
 
 def editorhead():
     return '''
-    <br />
-<!--<script src="//cdn.tinymce.com/4/tinymce.min.js"></script>-->
+<br />
 <script src="/static/tinymce4/tinymce/tinymce.min.js"></script>
 <script src="/static/tinymce4/tinymce/plugins/sh4tinymce/plugin.min.js"></script>
 <link rel = "stylesheet" href = "/static/tinymce4/tinymce/plugins/sh4tinymce/style/style.css">
@@ -418,7 +415,7 @@ tinymce.init({
   element_format : "html",
   language : "en",
   valid_elements : '*[*]',
-  extended_valid_elements: "script[language|type|src]",
+  extended_valid_elements: "script[language|type|src|id]",
   plugins: [
     'advlist autolink lists link image charmap print preview hr anchor pagebreak',
     'searchreplace wordcount visualblocks visualchars code fullscreen',
@@ -725,23 +722,36 @@ def generate_pages():
         os.remove(os.path.join(_curdir + "\\content\\", f))
     # 這裡需要建立專門寫出 html 的 write_page
     # index.html
-    file = open(_curdir + "\\content\\index.html", "w", encoding="utf-8")
-    file.write(get_page2(None, newhead, 0))
-    file.close()
+    with open(_curdir + "\\content\\index.html", "w", encoding="utf-8") as f:
+        f.write(get_page2(None, newhead, 0))
     # sitemap
-    file = open(_curdir + "\\content\\sitemap.html", "w", encoding="utf-8")
-    # sitemap2 需要 newhead
-    file.write(sitemap2(newhead))
-    file.close()
+    with open(_curdir + "\\content\\sitemap.html", "w", encoding="utf-8") as f:
+        # sitemap2 需要 newhead
+        f.write(sitemap2(newhead))
     # 以下轉檔, 改用 newhead 數列
+
+    def visible(element):
+        if element.parent.name in ['style', 'script', '[document]', 'head', 'title']:
+            return False
+        elif re.match('<!--.*-->', str(element.encode('utf-8'))):
+            return False
+        return True
+
+    search_content = []
     for i in range(len(newhead)):
         # 在此必須要將頁面中的 /images/ 字串換為 images/, /downloads/ 換為 downloads/
         # 因為 Flask 中靠 /images/ 取檔案, 但是一般 html 則採相對目錄取檔案
         # 此一字串置換在 get_page2 中進行
-        file = open(_curdir + "\\content\\" + newhead[i] + ".html", "w", encoding="utf-8")
-        # 增加以 newhead 作為輸入
-        file.write(get_page2(newhead[i], newhead, 0))
-        file.close()
+        get_page_content = []
+        html_doc = get_page2(newhead[i], newhead, 0, get_page_content)
+        soup = bs4.BeautifulSoup(" ".join(get_page_content), "html.parser")
+        search_content.append({"title": newhead[i], "text": " ".join(filter(visible, soup.findAll(text=True))), "tags": "", "url": newhead[i] + ".html"})
+        with open(_curdir + "\\content\\" + newhead[i] + ".html", "w", encoding="utf-8") as f:
+            # 增加以 newhead 作為輸入
+            f.write(html_doc)
+    # GENERATE js file
+    with open(_curdir + "\\content\\tipuesearch_content.js", "w", encoding="utf-8") as f:
+        f.write("var tipuesearch = {\"pages\": " + str(search_content) + "};")
     # generate each page html under content directory
     return "已經將網站轉為靜態網頁. <a href='/'>Home</a>"
 # seperate page need heading and edit variables, if edit=1, system will enter edit mode
@@ -821,16 +831,27 @@ def get_page(heading, edit):
 @app.route('/get_page2/<heading>', defaults={'edit': 0})
 @app.route('/get_page2/<heading>/<int:edit>')
 '''
-def get_page2(heading, head, edit):
+def get_page2(heading, head, edit, get_page_content = None):
     not_used_head, level, page = parse_content()
     # 直接在此將 /images/ 換為 ./../images/, /downloads/ 換為 ./../downloads/, 以 content 為基準的相對目錄設定
-    page = [w.replace('/images/', './../images/') for w in page]
-    page = [w.replace('/downloads/', './../downloads/') for w in page]
+    new_page = []
+    for w in page:
+        new_page.append(
+            w.replace('/images/', './../images/')
+            .replace('/downloads/', './../downloads/')
+            # 假如有 src="/static/ace/則換為 src="./../static/ace/
+            .replace('src="/static/', 'src="./../static/')
+            # 假如有 pythonpath:['/static/'] 則換為 pythonpath:['./../static/']
+            .replace("pythonpath:['/static/']", "pythonpath:['./../static/']")
+        )
+    page = new_page
     directory = render_menu2(head, level, page)
     if heading is None:
         heading = head[0]
     # 因為同一 heading 可能有多頁, 因此不可使用 head.index(heading) 搜尋 page_order
     page_order_list, page_content_list = search_content(head, page, heading)
+    if get_page_content is not None:
+        get_page_content.extend(page_content_list)
     return_content = ""
     pagedata = ""
     outstring = ""
@@ -870,7 +891,7 @@ def get_page2(heading, head, edit):
     # edit=0 for viewpage
     if edit == 0:
         return set_css2() + "<div class='container'><nav>"+ \
-        directory + "</nav><section>" + return_content + "</section></div></body></html>"
+        directory + "</nav><section><div id=\"tipue_search_content\">" + return_content + "</div></section></div></body></html>"
     # enter edit mode
     else:
         # check if administrator
@@ -887,8 +908,6 @@ def get_page2(heading, head, edit):
             #pagedata = "<h" + level[page_order]+">" + heading + "</h" + level[page_order] + ">" + search_content(head, page, heading)
             #outstring = last_page + " " + next_page + "<br />" + tinymce_editor(directory, cgi.escape(pagedata), page_order)
                 return outstring
-
-
 @app.route('/image_delete_file', methods=['POST'])
 def image_delete_file():
     if not isAdmin():
@@ -1186,7 +1205,9 @@ return 'images/';
 def index():
     head, level, page = parse_content()
     # fix first Chinese heading error
-    return redirect("/get_page/" + urllib.parse.quote_plus(head[0]))
+    # 2018.12.13, 將空白轉為"+" 號, 會導致連線錯誤, 改為直接取頁面標題
+    #return redirect("/get_page/" + urllib.parse.quote_plus(head[0], encoding="utf-8"))
+    return redirect("/get_page/" + head[0])
     # the following will never execute
     directory = render_menu(head, level, page)
     if heading is None:
@@ -1601,7 +1622,7 @@ def render_menu2(head, level, page, sitemap=0):
     if sitemap:
         directory += "<ul>"
     else:
-        directory += "<ul id='css3menu1' class='topmenu'>"
+        directory += "<ul id='css3menu1' class='topmenu'><div class=\"tipue_search_group\"><input style=\"width: 6vw;\" type=\"text\" name=\"q\" id=\"tipue_search_input\" pattern=\".{3,}\" title=\"Press enter key to search\" required></div>"
     for index in range(len(head)):
         this_level = level[index]
         # 若處理中的層級比上一層級高超過一層, 則將處理層級升級 (處理 h1 後直接接 h3 情況)
@@ -1785,7 +1806,7 @@ def set_admin_css():
     outstring = '''<!doctype html>
 <html><head>
 <meta http-equiv="content-type" content="text/html;charset=utf-8">
-<title>期末分組專案</title> \
+<title>''' + init.Init.site_title + '''</title> \
 <link rel="stylesheet" type="text/css" href="/static/cmsimply.css">
 ''' + syntaxhighlight()
 
@@ -1836,7 +1857,7 @@ def set_css():
     outstring = '''<!doctype html>
 <html><head>
 <meta http-equiv="content-type" content="text/html;charset=utf-8">
-<title>期末分組專案</title> \
+<title>''' + init.Init.site_title + '''</title> \
 <link rel="stylesheet" type="text/css" href="/static/cmsimply.css">
 ''' + syntaxhighlight()
 
@@ -1893,16 +1914,26 @@ def set_css2():
     outstring = '''<!doctype html>
 <html><head>
 <meta http-equiv="content-type" content="text/html;charset=utf-8">
-<title>期末分組專案</title> \
+<title>''' + init.Init.site_title + '''</title> \
 <link rel="stylesheet" type="text/css" href="./../static/cmsimply.css">
+<script src="tipuesearch_content.js"></script>
+<script src="./../static/jquery.js"></script>
+<link rel="stylesheet" href="./../static/tipuesearch/css/tipuesearch.css">
+<script src="./../static/tipuesearch/tipuesearch_set.js"></script>
+<script src="./../static/tipuesearch/tipuesearch.min.js"></script>
 ''' + syntaxhighlight2()
 
     outstring += '''
-<script src="./../static/jquery.js"></script>
 <script type="text/javascript">
 $(function(){
     $("ul.topmenu> li:has(ul) > a").append('<div class="arrow-right"></div>');
     $("ul.topmenu > li ul li:has(ul) > a").append('<div class="arrow-right"></div>');
+});
+$(document).ready(function() {
+     $('#tipue_search_input').tipuesearch({
+        newWindow: true,
+        minimumLength: 2,
+    });
 });
 </script>
 '''
@@ -1922,8 +1953,6 @@ window.location= 'https://' + location.host + location.pathname + location.searc
 <li><a href="sitemap.html">Site Map</a></li>
 <li><a href="./../reveal/index.html">reveal</a></li>
 <li><a href="./../blog/index.html">blog</a></li>
-'''
-    outstring += '''
 </ul>
 </confmenu></header>
 '''
@@ -1932,15 +1961,7 @@ window.location= 'https://' + location.host + location.pathname + location.searc
 
 def set_footer():
     """footer for page"""
-    return "<footer> \
-        <a href='/edit_page'>Edit All</a>| \
-        <a href='" + str(request.url) + "/1'>Edit</a>| \
-        <a href='edit_config'>Config</a> \
-        <a href='login'>login</a>| \
-        <a href='logout'>logout</a> \
-        <br />Powered by <a href='http://cmsimple.cycu.org'>CMSimply</a> \
-        </footer> \
-        </body></html>"
+    return "<footer><a href='/edit_page'>Edit All</a>|<a href='" + str(request.url) + "/1'>Edit</a>|<a href='edit_config'>Config</a><a href='login'>login</a>|<a href='logout'>logout</a><br />Powered by <a href='http://cmsimple.cycu.org'>CMSimply</a></footer></body></html>"
 @app.route('/sitemap', defaults={'edit': 1})
 @app.route('/sitemap/<path:edit>')
 def sitemap(edit):
@@ -2060,6 +2081,14 @@ def syntaxhighlight():
 <script src="https://scrum-3.github.io/web/brython/brython.js"></script>
 <script src="https://scrum-3.github.io/web/brython/brython_stdlib.js"></script>
 -->
+<style>
+img.red3border {
+    border: 3px solid red;
+}
+.black3border {
+    border: 3px solid black;
+}
+</style>
 '''
 
 
@@ -2112,6 +2141,14 @@ init_mathjax();
 <script src="https://scrum-3.github.io/web/brython/brython.js"></script>
 <script src="https://scrum-3.github.io/web/brython/brython_stdlib.js"></script>
 -->
+<style>
+img.red3border {
+    border: 3px solid red;
+}
+.black3border {
+    border: 3px solid black;
+}
+</style>
 '''
 
 
@@ -2155,5 +2192,33 @@ def unique(items):
     return keep
 
 
+@app.route('/edit_report')
+def edit_report():
+    head, level, page = parse_content()
+    directory = render_menu(head, level, page)
+    dir = "./report/markdown/paragraph"
+    outstring = ""
+    files = os.listdir(dir)
+    for i in range(len(files)):
+        outstring += "Edit: <a href='/do_edit_report/" + str(files[i]) +"'>" + str(files[i]) + "</a>"
+        outstring += "<br />"
+    #output = '<br />'.join(map(str, files))
+    return set_css() + "<div class='container'><nav>" + \
+             directory + "</nav><section>" + outstring + "</section></div></body></html>"
+
+@app.route('/do_edit_report/<file_name>')
+def do_edit_report(file_name):
+    if file_name is None:
+        pass
+    head, level, page = parse_content()
+    directory = render_menu(head, level, page)
+    dir = "./report/markdown/paragraph"
+    filename = dir + "/" + file_name
+    file_content = file_get_contents(filename)
+    outstring = ""
+    outstring += file_content
+    return set_css() + "<div class='container'><nav>" + \
+             directory + "</nav><section>" + outstring + "</section></div></body></html>"
+
 if __name__ == "__main__":
-    app.run()
+    app.run(host='127.0.0.1', port=8080, debug=True)
